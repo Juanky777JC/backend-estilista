@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 
 app = FastAPI(title="Backend Estilista")
 
-# Permitimos que la app se conecte sin bloqueos
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -16,7 +15,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- MODELOS DE DATOS ---
 class Cliente(BaseModel):
     nombre: str
     telefono: str
@@ -32,7 +30,6 @@ class Cita(BaseModel):
 class EstadoCita(BaseModel):
     nuevo_estado: str
 
-# --- CONEXIÓN ---
 def obtener_conexion():
     url = os.environ.get('DATABASE_URL')
     if not url:
@@ -41,13 +38,11 @@ def obtener_conexion():
         url += "?sslmode=require"
     return psycopg2.connect(url)
 
-# --- CREACIÓN AUTOMÁTICA DE TABLAS ---
 @app.on_event("startup")
 def startup_event():
     try:
         conexion = obtener_conexion()
         cursor = conexion.cursor()
-        
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS clientes (
                 id_cliente SERIAL PRIMARY KEY,
@@ -56,7 +51,6 @@ def startup_event():
                 direccion TEXT
             )
         """)
-        
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS citas (
                 id_cita SERIAL PRIMARY KEY,
@@ -69,21 +63,16 @@ def startup_event():
                 estado VARCHAR(50) DEFAULT 'Pendiente'
             )
         """)
-        
         conexion.commit()
         cursor.close()
         conexion.close()
-        print("Base de datos inicializada correctamente.")
     except Exception as e:
         print(f"Error inicializando la base de datos: {e}")
 
 @app.get("/")
 def home():
-    return {"mensaje": "Servidor en línea y conectado a la base de datos."}
+    return {"mensaje": "Servidor en línea"}
 
-# ==========================================
-# RUTAS PARA CLIENTAS
-# ==========================================
 @app.get("/clientes")
 def obtener_clientes():
     conexion = obtener_conexion()
@@ -106,20 +95,7 @@ def crear_cliente(cliente: Cliente):
     conexion.commit()
     cursor.close()
     conexion.close()
-    return {"id_cliente": id_nuevo, "mensaje": "Cliente creado exitosamente"}
-
-@app.put("/clientes/{id_cliente}")
-def editar_cliente(id_cliente: int, cliente: Cliente):
-    conexion = obtener_conexion()
-    cursor = conexion.cursor()
-    cursor.execute(
-        "UPDATE clientes SET nombre=%s, telefono=%s, direccion=%s WHERE id_cliente=%s",
-        (cliente.nombre, cliente.telefono, cliente.direccion, id_cliente)
-    )
-    conexion.commit()
-    cursor.close()
-    conexion.close()
-    return {"mensaje": "Perfil de cliente actualizado"}
+    return {"id_cliente": id_nuevo, "mensaje": "Cliente creado"}
 
 @app.delete("/clientes/{id_cliente}")
 def eliminar_cliente(id_cliente: int):
@@ -129,39 +105,19 @@ def eliminar_cliente(id_cliente: int):
     conexion.commit()
     cursor.close()
     conexion.close()
-    return {"mensaje": "Clienta eliminada correctamente"}
+    return {"mensaje": "Clienta eliminada"}
 
-@app.get("/clientes/historial/{nombre}")
-def historial_cliente(nombre: str):
-    conexion = obtener_conexion()
-    cursor = conexion.cursor(cursor_factory=RealDictCursor)
-    cursor.execute("""
-        SELECT c.* FROM citas c 
-        JOIN clientes cl ON c.id_cliente = cl.id_cliente 
-        WHERE cl.nombre = %s ORDER BY c.fecha_hora_inicio DESC
-    """, (nombre,))
-    datos = cursor.fetchall()
-    cursor.close()
-    conexion.close()
-    return datos
-
-# ==========================================
-# RUTAS PARA CITAS
-# ==========================================
 @app.get("/citas")
 def obtener_citas():
     try:
         conexion = obtener_conexion()
         cursor = conexion.cursor(cursor_factory=RealDictCursor)
-        query = """
+        cursor.execute("""
             SELECT c.id_cita, cl.nombre AS cliente, cl.telefono, cl.direccion, 
-                   c.fecha_hora_inicio, c.fecha_hora_fin, c.estado, c.notas_adicionales,
-                   c.precio_total
-            FROM citas c
-            JOIN clientes cl ON c.id_cliente = cl.id_cliente
+                   c.fecha_hora_inicio, c.fecha_hora_fin, c.estado, c.notas_adicionales, c.precio_total
+            FROM citas c JOIN clientes cl ON c.id_cliente = cl.id_cliente
             ORDER BY c.fecha_hora_inicio ASC;
-        """
-        cursor.execute(query) 
+        """) 
         datos = cursor.fetchall()
         cursor.close()
         conexion.close()
@@ -174,28 +130,23 @@ def crear_cita(cita: Cita):
     try:
         inicio = datetime.fromisoformat(cita.fecha_hora_inicio.replace('Z', ''))
         fin = inicio + timedelta(minutes=cita.duracion_minutos)
-        
         conexion = obtener_conexion()
-        cursor = conexion.cursor(cursor_factory=RealDictCursor)
+        cursor = conexion.cursor()
         
-        # --- REGLA ANTI-CRUCE (Ahora te dice con quién choca) ---
+        # ALERTA DE CRUCE DE HORARIO CON EL NOMBRE DE LA CLIENTA
         cursor.execute("""
-            SELECT cl.nombre, c.fecha_hora_inicio, c.fecha_hora_fin 
-            FROM citas c
+            SELECT cl.nombre FROM citas c
             JOIN clientes cl ON c.id_cliente = cl.id_cliente
             WHERE c.estado IN ('Pendiente', 'Confirmada')
-            AND c.fecha_hora_inicio < %s 
-            AND c.fecha_hora_fin > %s
-        """, (fin, inicio))
-        
+            AND (
+                (c.fecha_hora_inicio <= %s AND c.fecha_hora_fin > %s) OR
+                (c.fecha_hora_inicio < %s AND c.fecha_hora_fin >= %s) OR
+                (c.fecha_hora_inicio >= %s AND c.fecha_hora_fin <= %s)
+            )
+        """, (inicio, inicio, fin, fin, inicio, fin))
         cruce = cursor.fetchone()
         if cruce:
-            nombre_cliente = cruce['nombre']
-            hora_ini_cruce = cruce['fecha_hora_inicio'].strftime('%H:%M')
-            hora_fin_cruce = cruce['fecha_hora_fin'].strftime('%H:%M')
-            # Lanza el error con el mensaje detallado
-            raise Exception(f"Ya tienes una cita con {nombre_cliente} de {hora_ini_cruce} a {hora_fin_cruce} hrs.")
-        # ------------------------------------
+            raise Exception(f"¡Cruce de horario! Ya tienes una cita con {cruce[0]} en ese lapso.")
 
         cursor.execute("""
             INSERT INTO citas (id_cliente, precio_total, fecha_hora_inicio, fecha_hora_fin, duracion_minutos, notas_adicionales, estado)
@@ -204,7 +155,7 @@ def crear_cita(cita: Cita):
         conexion.commit()
         cursor.close()
         conexion.close()
-        return {"mensaje": "Cita agendada exitosamente"}
+        return {"mensaje": "Cita agendada"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -216,7 +167,7 @@ def borrar_cita(id_cita: int):
     conexion.commit()
     cursor.close()
     conexion.close()
-    return {"mensaje": "Cita eliminada de la ruta"}
+    return {"mensaje": "Cita eliminada"}
 
 @app.put("/citas/{id_cita}/estado")
 def cambiar_estado(id_cita: int, estado: EstadoCita):
@@ -226,4 +177,4 @@ def cambiar_estado(id_cita: int, estado: EstadoCita):
     conexion.commit()
     cursor.close()
     conexion.close()
-    return {"mensaje": f"Estado actualizado a {estado.nuevo_estado}"}
+    return {"mensaje": "Estado actualizado"}
