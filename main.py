@@ -48,7 +48,6 @@ def startup_event():
         conexion = obtener_conexion()
         cursor = conexion.cursor()
         
-        # 1. Creamos la tabla de clientas
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS clientes (
                 id_cliente SERIAL PRIMARY KEY,
@@ -58,7 +57,6 @@ def startup_event():
             )
         """)
         
-        # 2. Creamos la tabla de citas
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS citas (
                 id_cita SERIAL PRIMARY KEY,
@@ -75,7 +73,7 @@ def startup_event():
         conexion.commit()
         cursor.close()
         conexion.close()
-        print("Base de datos inicializada: Tablas verificadas correctamente.")
+        print("Base de datos inicializada correctamente.")
     except Exception as e:
         print(f"Error inicializando la base de datos: {e}")
 
@@ -178,21 +176,25 @@ def crear_cita(cita: Cita):
         fin = inicio + timedelta(minutes=cita.duracion_minutos)
         
         conexion = obtener_conexion()
-        cursor = conexion.cursor()
+        cursor = conexion.cursor(cursor_factory=RealDictCursor)
         
-        # --- REGLA ANTI-CRUCE DE HORARIOS ---
+        # --- REGLA ANTI-CRUCE (Ahora te dice con quién choca) ---
         cursor.execute("""
-            SELECT id_cita FROM citas 
-            WHERE estado IN ('Pendiente', 'Confirmada')
-            AND (
-                (fecha_hora_inicio <= %s AND fecha_hora_fin > %s) OR
-                (fecha_hora_inicio < %s AND fecha_hora_fin >= %s) OR
-                (fecha_hora_inicio >= %s AND fecha_hora_fin <= %s)
-            )
-        """, (inicio, inicio, fin, fin, inicio, fin))
+            SELECT cl.nombre, c.fecha_hora_inicio, c.fecha_hora_fin 
+            FROM citas c
+            JOIN clientes cl ON c.id_cliente = cl.id_cliente
+            WHERE c.estado IN ('Pendiente', 'Confirmada')
+            AND c.fecha_hora_inicio < %s 
+            AND c.fecha_hora_fin > %s
+        """, (fin, inicio))
         
-        if cursor.fetchone():
-            raise Exception("El horario se cruza con otra cita registrada.")
+        cruce = cursor.fetchone()
+        if cruce:
+            nombre_cliente = cruce['nombre']
+            hora_ini_cruce = cruce['fecha_hora_inicio'].strftime('%H:%M')
+            hora_fin_cruce = cruce['fecha_hora_fin'].strftime('%H:%M')
+            # Lanza el error con el mensaje detallado
+            raise Exception(f"Ya tienes una cita con {nombre_cliente} de {hora_ini_cruce} a {hora_fin_cruce} hrs.")
         # ------------------------------------
 
         cursor.execute("""
