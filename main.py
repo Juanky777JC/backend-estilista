@@ -107,6 +107,20 @@ def eliminar_cliente(id_cliente: int):
     conexion.close()
     return {"mensaje": "Clienta eliminada"}
 
+@app.get("/clientes/historial/{nombre}")
+def historial_cliente(nombre: str):
+    conexion = obtener_conexion()
+    cursor = conexion.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("""
+        SELECT c.* FROM citas c 
+        JOIN clientes cl ON c.id_cliente = cl.id_cliente 
+        WHERE cl.nombre = %s ORDER BY c.fecha_hora_inicio DESC
+    """, (nombre,))
+    datos = cursor.fetchall()
+    cursor.close()
+    conexion.close()
+    return datos
+
 @app.get("/citas")
 def obtener_citas():
     try:
